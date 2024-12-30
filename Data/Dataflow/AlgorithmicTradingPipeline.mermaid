@@ -1,0 +1,45 @@
+flowchart TD
+    subgraph Algorithmic Trading Pipeline
+        TRADE([Market Data Stream]) --> SPLIT{{"Stream Distributor"}}
+
+        %% Market Data Analysis Branch
+        SPLIT --> MA1[Price Analysis]
+        SPLIT --> MA2[Volume Analysis]
+        SPLIT --> MA3[Order Book Analysis]
+
+        MA1 --> MA1_1[Moving Averages]
+        MA1 --> MA1_2[Volatility Calc]
+        MA1_1 & MA1_2 --> PRICE((Price Signals))
+
+        MA2 --> MA2_1[Volume Profile]
+        MA2 --> MA2_2[Liquidity Analysis]
+        MA2_1 & MA2_2 --> VOL((Volume Signals))
+
+        MA3 --> MA3_1[Depth Analysis]
+        MA3 --> MA3_2[Spread Calc]
+        MA3_1 & MA3_2 --> BOOK((Book Signals))
+
+        %% Strategy Evaluation
+        PRICE & VOL & BOOK --> STRAT{{"Strategy Selector"}}
+
+        STRAT -->|High Volatility| HF[High Frequency]
+        STRAT -->|Medium Volatility| SW[Swing Trading]
+        STRAT -->|Low Volatility| PB[Position Building]
+
+        HF --> HF1[Arbitrage]
+        HF --> HF2[Market Making]
+
+        SW --> SW1[Momentum]
+        SW --> SW2[Mean Reversion]
+
+        PB --> PB1[Portfolio Balance]
+        PB --> PB2[Risk Parity]
+
+        %% Risk Check & Execution
+        HF1 & HF2 & SW1 & SW2 & PB1 & PB2 --> RISK{Risk Check}
+        RISK -->|Pass| EXEC[Order Execution]
+        RISK -->|Fail| ALERT[Risk Alert]
+
+        EXEC --> FEED[Feedback Loop]
+        FEED --> SPLIT
+    end

@@ -1,0 +1,46 @@
+flowchart TD
+    subgraph Autonomous Vehicle Sensor Fusion
+        SENSORS([Sensor Data]) --> DIST1{{"Initial Processing"}}
+
+        %% Sensor Processing
+        DIST1 --> CAM[Camera Array]
+        DIST1 --> LIDAR[LiDAR System]
+        DIST1 --> RADAR[Radar Array]
+        DIST1 --> GPS[GPS/IMU]
+
+        CAM --> CAM1[Object Detection]
+        CAM --> CAM2[Lane Detection]
+        CAM --> CAM3[Traffic Sign Recognition]
+
+        LIDAR --> LID1[Point Cloud Processing]
+        LIDAR --> LID2[Distance Measurement]
+
+        RADAR --> RAD1[Velocity Detection]
+        RADAR --> RAD2[Weather Penetration]
+
+        GPS --> GPS1[Position Tracking]
+        GPS --> GPS2[Motion Planning]
+
+        %% Fusion & Decision Making
+        CAM1 & CAM2 & CAM3 --> VIS((Visual Processing))
+        LID1 & LID2 --> DIST((Distance Processing))
+        RAD1 & RAD2 --> MOV((Movement Processing))
+        GPS1 & GPS2 --> LOC((Location Processing))
+
+        VIS & DIST & MOV & LOC --> FUSION{{"Sensor Fusion"}}
+
+        FUSION --> OBS[Obstacle Detection]
+        FUSION --> PATH[Path Planning]
+        FUSION --> PRED[Prediction]
+
+        OBS & PATH & PRED --> DECISION{Decision Making}
+
+        DECISION -->|Emergency| STOP[Emergency Stop]
+        DECISION -->|Normal| DRIVE[Drive Control]
+        DECISION -->|Caution| SLOW[Speed Reduction]
+
+        STOP & DRIVE & SLOW --> EXEC2[Execution]
+        EXEC2 --> FEEDBACK[Feedback Loop]
+        FEEDBACK --> DIST1
+    end
+

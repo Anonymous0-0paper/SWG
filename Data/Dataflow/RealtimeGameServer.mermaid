@@ -1,0 +1,52 @@
+flowchart TD
+    subgraph Real-time Game Server
+        GAME([Game Events]) --> ROUTER{{"Event Router"}}
+
+        %% Physics Processing
+        ROUTER --> PHY1[Collision Detection]
+        ROUTER --> PHY2[Physics Simulation]
+        ROUTER --> PHY3[Movement Prediction]
+
+        PHY1 --> COL1[Broad Phase]
+        PHY1 --> COL2[Narrow Phase]
+
+        PHY2 --> SIM1[Rigid Body]
+        PHY2 --> SIM2[Soft Body]
+
+        PHY3 --> PRED1[Client Prediction]
+        PHY3 --> PRED2[Server Reconciliation]
+
+        %% Combat System
+        ROUTER --> CBT1[Damage Calculation]
+        ROUTER --> CBT2[Status Effects]
+        ROUTER --> CBT3[AI Decision Making]
+
+        CBT1 --> DMG1[Hit Detection]
+        CBT1 --> DMG2[Damage Types]
+
+        CBT2 --> EFF1[Buff Processing]
+        CBT2 --> EFF2[Debuff Processing]
+
+        CBT3 --> AI1[Pathfinding]
+        CBT3 --> AI2[Combat Strategy]
+
+        %% World State Management
+        COL1 & COL2 --> COLL((Collision Result))
+        SIM1 & SIM2 --> PHYS((Physics Result))
+        PRED1 & PRED2 --> MOVE((Movement Result))
+
+        DMG1 & DMG2 --> DAMAGE((Combat Result))
+        EFF1 & EFF2 --> STATUS((Status Result))
+        AI1 & AI2 --> BRAIN((AI Result))
+
+        COLL & PHYS & MOVE --> WORLD1{World State Update}
+        DAMAGE & STATUS & BRAIN --> WORLD2{Entity State Update}
+
+        WORLD1 & WORLD2 --> SYNC[State Synchronization]
+
+        SYNC --> |Valid| BROAD[Broadcast]
+        SYNC --> |Invalid| ROLLBACK[State Rollback]
+
+        BROAD --> CLIENT[Client Update]
+        ROLLBACK --> ROUTER
+    end
