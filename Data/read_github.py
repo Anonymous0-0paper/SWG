@@ -218,6 +218,25 @@ def save_java_files_to_txt(repo_path: str, target_folder: str, output_file: str,
 
 def process_repository(repo_url: str, target_folder: str, output_dir: str,
                        clone_base_dir: str, config: Config) -> Dict:
+    """
+        Process a single repository by cloning and extracting files.
+
+        Args:
+            repo_url (str): Repository URL
+            target_folder (str): Target folder for file extraction
+            output_dir (str): Output directory
+            clone_base_dir (str): Base directory for clones
+            config (Config): Configuration object
+
+        Returns:
+            Dict: Processing statistics
+
+        Notes:
+            - Handles repository cloning/updating
+            - Manages file extraction and processing
+            - Returns processing statistics
+    """
+
     repo_name = repo_url.rstrip('.git').split('/')[-1]
     repo_clone_path = os.path.join(clone_base_dir, repo_name)
     output_file = os.path.join(output_dir, f"{repo_name}_java_files")
@@ -242,24 +261,7 @@ def process_repository(repo_url: str, target_folder: str, output_dir: str,
 
         return stats
     return {'processed': 0, 'skipped': 0, 'errors': 1}
-    """
-    Process a single repository by cloning and extracting files.
-    
-    Args:
-        repo_url (str): Repository URL
-        target_folder (str): Target folder for file extraction
-        output_dir (str): Output directory
-        clone_base_dir (str): Base directory for clones
-        config (Config): Configuration object
-        
-    Returns:
-        Dict: Processing statistics
-        
-    Notes:
-        - Handles repository cloning/updating
-        - Manages file extraction and processing
-        - Returns processing statistics
-    """
+
     repo_name = repo_url.rstrip('.git').split('/')[-1]
     repo_clone_path = os.path.join(clone_base_dir, repo_name)
     output_file = os.path.join(output_dir, f"{repo_name}_java_files")

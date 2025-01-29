@@ -1,5 +1,8 @@
 import argparse
-import sys
+import logging
+import json
+import os
+from datetime import datetime
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
@@ -10,185 +13,285 @@ from langchain_groq import ChatGroq
 from Config.env_config import configure_llms_environment, configure_langchain_environment
 from code_evaluation import comprehensive_code_evaluation, print_evaluation_report
 
+from prompt_toolkit import prompt
+from prompt_toolkit.completion import WordCompleter
+
+# Initialize logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Initialize environment for all LLMs
+configure_langchain_environment()
 configure_llms_environment()
 
-def get_llm_model(model_choice: str):
+# Memory file directory
+MEMORY_DIR = "memory_files"
+os.makedirs(MEMORY_DIR, exist_ok=True)
+
+# Load a memory file
+def load_memory(file_name: str):
+    memory_path = os.path.join(MEMORY_DIR, file_name)
+    if os.path.exists(memory_path):
+        with open(memory_path, 'r') as file:
+            try:
+                return json.load(file)
+            except json.JSONDecodeError:
+                logger.warning(f"Memory file '{file_name}' is corrupted. Starting with an empty memory.")
+                return []
+    return []
+
+# Save memory to a timestamped file
+def save_memory(memory):
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    memory_path = os.path.join(MEMORY_DIR, f"memory_{timestamp}.json")
+    with open(memory_path, 'w') as file:
+        json.dump(memory, file, indent=2)
+    logger.info(f"Memory saved to {memory_path}")
+
+# List available memory files
+def list_memory_files():
+    files = [f for f in os.listdir(MEMORY_DIR) if f.endswith(".json")]
+    if not files:
+        print("No memory files found.")
+        return []
+    print("\nAvailable Memory Files:")
+    for i, file_name in enumerate(files, 1):
+        print(f"  {i}. {file_name}")
+    return files
+
+# Prompt user to choose a memory file
+def choose_memory_file():
+    files = list_memory_files()
+    if not files:
+        print("Starting with an empty memory.")
+        return []
+
+    choice = input("\nEnter the number of the memory file to load (or press Enter to skip): ").strip()
+    if choice.isdigit() and 1 <= int(choice) <= len(files):
+        selected_file = files[int(choice) - 1]
+        print(f"Using memory file: {selected_file}")
+        return load_memory(selected_file)
+    else:
+        print("No memory file selected. Starting with an empty memory.")
+        return []
+
+# In-memory conversation history
+conversation_memory = []
+
+def get_llm_model(model_choice: str, temperature: float, top_p: float, max_tokens: int):
     """
     Returns an LLM model instance based on the given model choice string.
-    If the choice is invalid or not recognized, returns a default model.
+    Configures the model with temperature, top-p, and max_tokens.
     """
-    # Dictionary mapping model choice to the actual LLM object
     model_mapping = {
-        "mistral": ChatMistralAI(model="mistral-large-latest"),
-        "openai": ChatOpenAI(model="gpt-4o"),
-        "anthropic": ChatAnthropic(model="claude-3-sonnet"),
-        # "groq": ChatGroq(model="llama3-8b-8192"),
-        "cohere": ChatCohere(model="command-r-plus"),
+        "mistral": ChatMistralAI(model="mistral-large-latest", temperature=temperature, top_p=top_p, max_tokens=max_tokens),
+        "openai": ChatOpenAI(model="gpt-4o", temperature=temperature, top_p=top_p, max_tokens=max_tokens),
+        "anthropic": ChatAnthropic(model="claude-3-sonnet", temperature=temperature, top_p=top_p, max_tokens=max_tokens),
+        "cohere": ChatCohere(model="command-r-plus", temperature=temperature, top_p=top_p, max_tokens=max_tokens),
     }
 
     if model_choice.lower() in model_mapping:
         return model_mapping[model_choice.lower()]
     else:
-        print(f"WARNING: Invalid model choice '{model_choice}'. Defaulting to Mistral.")
-        return ChatMistralAI(model="mistral-large-latest")
+        logger.warning(f"Invalid model choice '{model_choice}'. Defaulting to Mistral.")
+        return ChatMistralAI(model="mistral-large-latest", temperature=temperature, top_p=top_p, max_tokens=max_tokens)
 
-def prompt_for_streaming_system() -> str:
-    """
-    Prompts the user to select a streaming system from a menu.
-    Returns the chosen system as a string.
-    """
-    systems = {
-        "1": "Apache Flink",
-        "2": "Apache Storm",
-        "3": "Apache Spark",
-        "4": "Kafka Stream",
-    }
+# def prompt_for_streaming_system() -> str:
+#     """
+#     Prompts the user to select a streaming system from a menu or via auto-completion.
+#     Returns the chosen system as a string.
+#     """
+#     systems_completer = WordCompleter(
+#         [
+#             "Apache Flink", "Apache Storm", "Apache Spark", "Kafka Stream",
+#             "Apache Samza", "Apache Heron", "Materialize", "Apache Pulsar",
+#             "Redpanda", "Google Dataflow", "Amazon Kinesis"
+#         ],
+#         ignore_case=True,
+#     )
+#
+#     return prompt("Choose a streaming system: ", completer=systems_completer)
 
-    for key, value in systems.items():
-        print(f"{key}. {value}")
+# List available streaming systems
+def list_streaming_systems():
+    systems = [
+        "Apache Flink", "Apache Storm", "Apache Spark", "Kafka Stream",
+        "Apache Samza", "Apache Heron", "Materialize", "Apache Pulsar",
+        "Redpanda", "Google Dataflow", "Amazon Kinesis"
+    ]
+    print("\nAvailable Streaming Systems:")
+    for i, system in enumerate(systems, 1):
+        print(f"  {i}. {system}")
+    return systems
 
-    choice = input("Enter your choice (1/2/3/4): ").strip()
-    if choice in systems:
-        return systems[choice]
+# Prompt user to choose a streaming system
+def prompt_for_streaming_system():
+    systems = list_streaming_systems()
+    choice = input("\nEnter the number of the streaming system to use: ").strip()
+    if choice.isdigit() and 1 <= int(choice) <= len(systems):
+        return systems[int(choice) - 1]
     else:
         print("Invalid choice. Defaulting to 'Apache Flink'.")
         return "Apache Flink"
 
-def build_messages(streaming_system: str, user_message: str):
+def build_messages(streaming_system: str, user_message: str, use_memory: bool, custom_template: str = None):
     """
     Builds the list of system and human messages to be passed to the model.
+    Optionally includes conversation history in the messages.
     """
-    return [
-        SystemMessage(
-            content=(
-                f"You are a highly skilled stream-processing expert."
-                f"Your task is to generate a complete application pipeline for {streaming_system} (latest version) "
-                f"Provide well-commented, production-grade code samples, along with any setup instructions."
-                f"Use the user's request below as a key reference."
-            )
-        ),
-        HumanMessage(content=user_message),
+    system_content = custom_template or (
+        f"You are a highly skilled stream-processing expert. "
+        f"Your task is to generate a complete application pipeline for {streaming_system} (latest version). "
+        f"Provide well-commented, production-grade code samples, along with any setup instructions. "
+        f"Use the user's request below as a key reference."
+    )
+
+    messages = [SystemMessage(content=system_content)]
+
+    # Include memory if the user chooses to use it
+    if use_memory:
+        for past_message in conversation_memory:
+            messages.append(HumanMessage(content=past_message["user_message"]))
+            messages.append(SystemMessage(content=past_message["response_content"]))
+
+    messages.append(HumanMessage(content=user_message))
+    return messages
+
+def invoke_model(models, messages):
+    """
+    Invokes the chosen LLM models in sequence and returns the final response content.
+    """
+    response_content = ""
+    for model in models:
+        try:
+            response = model.invoke(messages)
+            response_content += response.content + "\n"
+        except Exception as e:
+            logger.error(f"Failed to invoke model {model}. Details: {e}")
+            response_content += "An error occurred while generating the response.\n"
+    return response_content
+
+def interactive_mode(args):
+    """
+    Runs the script in interactive mode, allowing multiple interactions in a single session.
+    """
+    global conversation_memory
+    conversation_memory = choose_memory_file()
+
+    models = [
+        get_llm_model(model, args.temperature, args.top_p, args.max_tokens)
+        for model in args.models.split(',')
     ]
 
-def invoke_model(model, messages):
-    """
-    Invokes the chosen LLM model and returns its response content.
-    Includes optional exception handling.
-    """
-    try:
-        response = model.invoke(messages)
-        return response.content
-    except Exception as e:
-        print(f"ERROR: Failed to invoke the model. Details: {e}")
-        return "I'm sorry, something went wrong while generating the response."
+    while True:
+        streaming_system = prompt_for_streaming_system()
+        user_message = input("\nPlease enter your message: ")
+        use_memory = input("Do you want to use the loaded memory in this interaction? (y/n): ").strip().lower() == "y"
 
-def evaluate_response(response_content: str, streaming_system: str, user_message: str) -> dict:
-    """
-    Evaluates the quality of generated code response.
+        if args.prompt_file:
+            with open(args.prompt_file, 'r') as file:
+                custom_template = file.read()
+        else:
+            custom_template = input("Enter custom system message template (optional): ").strip() or None
 
-    Args:
-        response_content: Generated response from LLM
-        streaming_system: Name of streaming system
-        user_message: Original user query
+        messages = build_messages(streaming_system, user_message, use_memory, custom_template)
+        response_content = invoke_model(models, messages)
 
-    Returns:
-        Dict containing evaluation metrics
-    """
-    metrics = {
-        'code_presence': False,
-        'code_blocks': 0,
-        'system_specific': False,
-        'compilation_ready': False,
-        'has_comments': False,
-        'has_setup': False,
-        'score': 0
-    }
+        print("\nGenerated Response:")
+        print(response_content)
 
-    # Check for code blocks
-    code_blocks = response_content.count('```')
-    metrics['code_blocks'] = code_blocks // 2
-    metrics['code_presence'] = code_blocks > 0
+        # Save interaction to memory
+        conversation_memory.append({
+            "streaming_system": streaming_system,
+            "user_message": user_message,
+            "response_content": response_content
+        })
 
-    # Check for streaming system references
-    metrics['system_specific'] = streaming_system.lower() in response_content.lower()
+        save_memory(conversation_memory)
 
-    # Check for common code patterns
-    if metrics['code_presence']:
-        metrics['has_comments'] = '//' in response_content or '#' in response_content
-        metrics['has_setup'] = 'import' in response_content or 'dependencies' in response_content.lower()
-        metrics['compilation_ready'] = all([
-            'class' in response_content or 'def' in response_content,
-            'main' in response_content.lower(),
-            metrics['has_setup']
-        ])
-
-    # Calculate overall score
-    metrics['score'] = sum([
-        20 if metrics['code_presence'] else 0,
-        20 if metrics['system_specific'] else 0,
-        20 if metrics['compilation_ready'] else 0,
-        20 if metrics['has_comments'] else 0,
-        20 if metrics['has_setup'] else 0
-    ]) / 100.0
-
-    return metrics
-
-def print_evaluation(metrics: dict):
-    """Prints evaluation results in a formatted way."""
-    print("\nResponse Evaluation:")
-    print(f"✓ Code Present: {'Yes' if metrics['code_presence'] else 'No'}")
-    print(f"✓ Code Blocks: {metrics['code_blocks']}")
-    print(f"✓ System Specific: {'Yes' if metrics['system_specific'] else 'No'}")
-    print(f"✓ Compilation Ready: {'Yes' if metrics['compilation_ready'] else 'No'}")
-    print(f"✓ Has Comments: {'Yes' if metrics['has_comments'] else 'No'}")
-    print(f"✓ Has Setup: {'Yes' if metrics['has_setup'] else 'No'}")
-    print(f"Overall Score: {metrics['score']*100:.1f}%")
-
+        # Continue or exit
+        if input("\nDo you want to continue? (y/n): ").strip().lower() != "y":
+            break
 
 def main(args):
     """
-    Main function that orchestrates the user prompt for the streaming system,
-    collects the message, invokes the model, and prints the result.
+    Main function that handles single interaction or starts interactive mode.
     """
-    # Pick the LLM based on command-line argument or default to 'mistral'
-    model = get_llm_model(args.model)
+    if args.interactive:
+        interactive_mode(args)
+    else:
+        models = [
+            get_llm_model(model, args.temperature, args.top_p, args.max_tokens)
+            for model in args.models.split(',')
+        ]
+        streaming_system = prompt_for_streaming_system()
+        user_message = input("Please enter your message: ")
+        use_memory = input("Do you want to use the loaded memory in this interaction? (y/n): ").strip().lower() == "y"
 
-    # Get user input for streaming system and the message
-    streaming_system = prompt_for_streaming_system()
-    user_message = input("Please enter your message: ")
-    print("Please be patient, we are preparing your code...")
+        if args.prompt_file:
+            with open(args.prompt_file, 'r') as file:
+                custom_template = file.read()
+        else:
+            custom_template = input("Enter custom system message template (optional): ").strip() or None
 
-    # Build messages to send
-    messages = build_messages(streaming_system, user_message)
+        messages = build_messages(streaming_system, user_message, use_memory, custom_template)
+        response_content = invoke_model(models, messages)
 
-    # Invoke the model and print the response
-    response_content = invoke_model(model, messages)
-    print(response_content)
+        print(response_content)
 
-    metrics = evaluate_response(response_content, streaming_system, user_message)
-    print_evaluation(metrics)
+        # Save interaction to memory
+        conversation_memory.append({
+            "streaming_system": streaming_system,
+            "user_message": user_message,
+            "response_content": response_content
+        })
 
-    # Comprehensive evaluation
-    eval_result = comprehensive_code_evaluation(response_content, streaming_system)
-    print_evaluation_report(eval_result)
+        save_memory(conversation_memory)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Generate code snippets for a chosen streaming system using an LLM model."
+        description="Generate code snippets for a chosen streaming system using LLM models."
     )
     parser.add_argument(
-        "--model",
+        "--models",
         type=str,
         default="mistral",
-        help="Model choice: mistral, openai, anthropic, groq, or cohere. Defaults to 'mistral'."
+        help="Comma-separated model choices: mistral, openai, anthropic, groq, cohere. Defaults to 'mistral'."
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.7,
+        help="Set the temperature for the model response. Defaults to 0.7."
+    )
+    parser.add_argument(
+        "--top_p",
+        type=float,
+        default=0.9,
+        help="Set the top-p value for nucleus sampling. Defaults to 0.9."
+    )
+    parser.add_argument(
+        "--max_tokens",
+        type=int,
+        default=15000,
+        help="Set the maximum number of tokens in the model's response. Defaults to 500."
+    )
+    parser.add_argument(
+        "--prompt_file",
+        type=str,
+        help="Path to a file containing the custom system message template."
+    )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Run in interactive mode for continuous usage."
     )
     args = parser.parse_args()
-    configure_langchain_environment()
-    configure_llms_environment()
-    # If you need advanced logging, replace prints with Python's logging library setup:
-    # import logging
-    # logging.basicConfig(level=logging.INFO)
-    # logger = logging.getLogger(__name__)
 
-    main(args)
+    if True:
+        while True:
+            interactive_mode(args)
+            if input("Do you want to continue? (y/n): ").strip().lower() != 'y':
+                break
+    else:
+        main(args)
