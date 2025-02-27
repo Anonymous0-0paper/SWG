@@ -607,41 +607,6 @@ class PlanExecutor:
         from step_results_saver import create_results_saver
         self.results_saver = create_results_saver()
 
-    # def execute_plan(self, plan: ExecutionPlan) -> str:
-    #     """
-    #     Execute all steps in the execution plan and return the final result.
-    #
-    #     :param plan: The ExecutionPlan to execute
-    #     :return: The final response string
-    #     """
-    #     log_phase("=== Plan Execution Phase ===")
-    #     log_phase(plan.visualize())
-    #
-    #     while plan.has_remaining_steps():
-    #         executable_steps = plan.get_next_executable_steps()
-    #
-    #         for step in executable_steps:
-    #             log_phase(f"Executing step {step.step_id}: {step.action}")
-    #             result = self._execute_step(step, plan)
-    #             plan.mark_step_completed(step.step_id, result)
-    #
-    #             # Store the result in context for future steps
-    #             self.context[f"step_{step.step_id}_result"] = result
-    #
-    #             # Add result to the graph
-    #             node_id = self.graph.add_node(
-    #                 f"Step {step.step_id} ({step.action}) result: {str(result)[:200]}...",
-    #                 node_type="plan_step"
-    #             )
-    #             log_phase(f"Added plan step node {node_id}")
-    #
-    #     # The final step should be a synthesize_response step
-    #     final_steps = [s for s in plan.steps if s.action == "synthesize_response"]
-    #     if final_steps:
-    #         return final_steps[0].result
-    #
-    #     # Fallback if no synthesize_response step exists
-    #     return "Plan execution complete, but no final response was generated."
     def execute_plan(self, plan: ExecutionPlan) -> str:
         """
         Execute all steps in the execution plan and return the final result.
@@ -725,70 +690,6 @@ class PlanExecutor:
             intent=intent,
             streaming_system=self.streaming_system
         )
-
-    # def _execute_step(self, step: ActionStep, plan: ExecutionPlan) -> any:
-    #     """
-    #     Execute a single step in the plan.
-    #
-    #     :param step: The ActionStep to execute
-    #     :param plan: The current ExecutionPlan (for context)
-    #     :return: The result of executing the step
-    #     """
-    #     # Get dependency results
-    #     dependency_results = {
-    #         f"step_{dep_id}_result": plan.steps[dep_id].result
-    #         for dep_id in step.dependencies
-    #         if plan.steps[dep_id].is_completed
-    #     }
-    #
-    #     # Execute different actions based on the step type
-    #     if step.action == "analyze_complexity":
-    #         return self._analyze_complexity(plan.query)
-    #
-    #     elif step.action == "gather_requirements":
-    #         return self._gather_requirements(plan.query, dependency_results)
-    #
-    #     elif step.action == "retrieve_documents":
-    #         return self._retrieve_documents(plan.query, self.streaming_system)
-    #
-    #     elif step.action == "design_architecture":
-    #         return self._design_architecture(plan.query, dependency_results, self.streaming_system)
-    #
-    #     elif step.action == "generate_code":
-    #         return self._generate_code(plan.query, dependency_results, self.streaming_system)
-    #
-    #     # elif step.action == "generate_deployment":
-    #     #     return self._generate_deployment(dependency_results, self.streaming_system)
-    #
-    #     elif step.action == "generate_explanation":
-    #         return self._generate_explanation(plan.query, dependency_results, self.streaming_system)
-    #
-    #     elif step.action == "provide_examples":
-    #         return self._provide_examples(dependency_results, self.streaming_system)
-    #
-    #     elif step.action == "identify_problem":
-    #         return self._identify_problem(plan.query)
-    #     elif step.action == "generate_solutions":
-    #         return self._generate_solutions(dependency_results, self.streaming_system)
-    #
-    #     elif step.action == "identify_criteria":
-    #         return self._identify_criteria(plan.query, dependency_results)
-    #
-    #     elif step.action == "perform_comparison":
-    #         return self._perform_comparison(plan.query, dependency_results)
-    #
-    #     elif step.action == "identify_targets":
-    #         return self._identify_targets(plan.query)
-    #
-    #     elif step.action == "generate_strategies":
-    #         return self._generate_strategies(dependency_results, self.streaming_system)
-    #
-    #     elif step.action == "synthesize_response":
-    #         return self._synthesize_response(plan.query, dependency_results, self.streaming_system)
-    #
-    #     else:
-    #         # Default handler for unknown action types
-    #         return f"Unknown action: {step.action}"
 
     def _execute_step(self, step: ActionStep, plan: ExecutionPlan) -> any:
         """
