@@ -1,0 +1,1 @@
+I want to build an Apache Flink pipeline to perform word count. The pipeline should consume data from Apache Kafka as the input source, process the incoming stream of text messages to calculate the frequency of each word, and then save the results (word counts) to a text file.
