@@ -36,7 +36,7 @@ def configure_llms_environment():
     os.environ["OPENAI_API_KEY"] = "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"
     os.environ["ANTHROPIC_API_KEY"] = "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"  # Replace with your actual Anthropic API key if you want to test that model
     os.environ["MISTRAL_API_KEY"] = "QaxMSLno2alGaYiyYzhxSdojqQpEsVtv" # Replace with your actual Mistral API key
-    os.environ["GROK_API_KEY"] = "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"
+    os.environ["GROQ_API_KEY"] = "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"#"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"
     os.environ["COHERE_API_KEY"] = "q8ZssJ9hNEtVVp4Xs4mWV2S5LT6TNQ2llJrXksNP"
 
     # Verify configuration (optional: remove in production)
@@ -46,7 +46,7 @@ def configure_llms_environment():
                 "OPENAI_API_KEY",
                 "ANTHROPIC_API_KEY",
                 "MISTRAL_API_KEY",
-                "GROK_API_KEY",
+                "GROQ_API_KEY",
                 "COHERE_API_KEY",
             ]
     ):

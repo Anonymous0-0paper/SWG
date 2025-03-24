@@ -2,13 +2,20 @@
 # Query Analyzer and Planner
 # ---------------------------
 import json
+import os
 import re
+from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # from deepGoT_main import GraphOfThoughts
 from utils import log_phase, retrieve_relevant_documents
-
+# Add these imports to the top of query_analyzer.py
+from validation_system import (
+    FeedbackLoopSystem,
+    PromptEngineeringSystem,
+    get_validator, logger
+)
 
 class QueryIntent:
     """Represents the detected intent of a user query."""
@@ -113,6 +120,160 @@ class ExecutionPlan:
                 visualization.append(f"    Result: {result_preview}")
 
         return "\n".join(visualization)
+
+# Add this new step type to the ExecutionPlan class
+class CodeValidationStep(ExecutionPlan):
+    """Step that validates and improves generated code."""
+
+    def __init__(self, code_node_id, streaming_system, task_type="general", max_iterations=3):
+        super().__init__("code_validation")
+        self.code_node_id = code_node_id
+        self.streaming_system = streaming_system
+        self.task_type = task_type
+        self.max_iterations = max_iterations
+
+    def execute(self, executor, graph):
+        """Execute code validation and improvement."""
+        logger.info(f"Executing code validation step for node {self.code_node_id}")
+
+        # Get the code from the specified node
+        code_node = graph.get_node(self.code_node_id)
+        if not code_node:
+            logger.error(f"Code node {self.code_node_id} not found.")
+            return False, "Code node not found."
+
+        # Extract code if needed (e.g., if it's wrapped in markdown)
+        import re
+        code_text = code_node.content
+        code_blocks = re.findall(r"```(?:\w+)?\n(.+?)```", code_text, re.DOTALL)
+        if code_blocks:
+            code = code_blocks[0].strip()
+        else:
+            code = code_text.strip()
+
+        # Initialize feedback system with the model
+        feedback_system = FeedbackLoopSystem(executor.models[0], self.streaming_system)
+
+        # Get user query from the earliest user node
+        user_nodes = [n for n in graph.nodes.values() if n.type == "user"]
+        user_query = user_nodes[0].content if user_nodes else "Generate stream processing code"
+
+        # Validate and improve code
+        improvement_results = feedback_system.validate_and_improve(
+            code,
+            user_query,
+            max_iterations=self.max_iterations
+        )
+
+        # Create a node for the validation results
+        validation_summary = executor.create_validation_summary(improvement_results)
+        validation_node_id = graph.add_node(
+            validation_summary,
+            parent_ids=[self.code_node_id],
+            node_type="validation"
+        )
+
+        # Create a node for the improved code if it's different
+        improved_code = improvement_results["improved_code"]
+        if improved_code != code:
+            improved_code_node_id = graph.add_node(
+                f"```\n{improved_code}\n```",
+                parent_ids=[self.code_node_id, validation_node_id],
+                node_type="improved_code"
+            )
+            logger.info(f"Added improved code node {improved_code_node_id}")
+
+            # Save the improved code to a file
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            improved_code_path = os.path.join(
+                executor.results_dir,
+                f"improved_code_{timestamp}.txt"
+            )
+            with open(improved_code_path, 'w') as f:
+                f.write(improved_code)
+
+            return True, improved_code_node_id
+        else:
+            logger.info("Code was already optimal or could not be improved")
+            return True, validation_node_id
+
+
+# Add this method to the QueryAnalyzer class
+def add_validation_steps(self, execution_plan, code_generation_step_id, streaming_system):
+    """Add code validation step after code generation."""
+    # Find position of code generation step
+    step_index = None
+    for i, step in enumerate(execution_plan.steps):
+        if step.id == code_generation_step_id:
+            step_index = i
+            break
+
+    if step_index is not None:
+        # Add validation step right after code generation
+        validation_step = CodeValidationStep(
+            code_node_id=code_generation_step_id,
+            streaming_system=streaming_system
+        )
+        # Insert after code generation step
+        execution_plan.steps.insert(step_index + 1, validation_step)
+        logger.info(f"Added code validation step after step {code_generation_step_id}")
+
+    return execution_plan
+
+
+# Add this method to the PlanExecutor class
+def create_validation_summary(self, improvement_results):
+    """Create a human-readable summary of the validation results."""
+    history = improvement_results["history"]
+    metrics = improvement_results["metrics"]
+
+    summary_parts = []
+    summary_parts.append("# Code Validation and Improvement Summary")
+
+    # Overall stats
+    summary_parts.append(f"\n## Overall Results")
+    summary_parts.append(f"- Iterations performed: {metrics['iteration_count']}")
+
+    if metrics['iteration_count'] > 1:
+        # Improvement stats
+        initial_issues = metrics['issues_by_iteration'][0]
+        final_issues = metrics['issues_by_iteration'][-1]
+
+        initial_warnings = metrics['warnings_by_iteration'][0]
+        final_warnings = metrics['warnings_by_iteration'][-1]
+
+        if initial_issues > final_issues or initial_warnings > final_warnings:
+            summary_parts.append(f"- Critical issues: {initial_issues} → {final_issues}")
+            summary_parts.append(f"- Warnings: {initial_warnings} → {final_warnings}")
+
+            if metrics.get('improved', False):
+                rate = metrics.get('improvement_rate', 0) * 100
+                summary_parts.append(f"- Overall improvement rate: {rate:.1f}%")
+        else:
+            summary_parts.append("- No significant improvements were made to the code.")
+
+    # Details for each iteration
+    summary_parts.append("\n## Iteration Details")
+    for i, iteration in enumerate(history):
+        summary_parts.append(f"\n### Iteration {i+1}")
+        validation = iteration["validation_results"]
+
+        # Issues and warnings
+        if validation.get("issues", []):
+            summary_parts.append("\nCritical Issues:")
+            for issue in validation["issues"]:
+                summary_parts.append(f"- {issue}")
+
+        if validation.get("warnings", []):
+            summary_parts.append("\nWarnings:")
+            for warning in validation["warnings"]:
+                summary_parts.append(f"- {warning}")
+
+        if not validation.get("issues", []) and not validation.get("warnings", []):
+            summary_parts.append("✅ No issues or warnings detected.")
+
+    return "\n".join(summary_parts)
+
 
 class QueryAnalyzer:
     """
@@ -1145,3 +1306,7 @@ class PlanExecutor:
 
         response = self.models[0].invoke([HumanMessage(content=prompt)])
         return response.content
+
+
+
+

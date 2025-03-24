@@ -17,14 +17,22 @@ from langchain_groq import ChatGroq
 import utils
 from Config.env_config import configure_llms_environment, configure_langchain_environment
 from query_analyzer import PlanExecutor, QueryAnalyzer
+from resilient_execution import ResilientModelHandler
 
 from utils import log_phase, retrieve_relevant_documents
 
+# Import the validation system
+from validation_system import (
+    StreamProcessingValidator,
+    FeedbackLoopSystem,
+    PromptEngineeringSystem,
+    get_validator,
+    integrate_into_deepgot
+)
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 
 # Initialize environment for all LLMs
 configure_langchain_environment()
@@ -34,11 +42,160 @@ configure_llms_environment()
 MEMORY_DIR = "memory_files"
 os.makedirs(MEMORY_DIR, exist_ok=True)
 
+
+
+# Create directory for validation results
+VALIDATION_RESULTS_DIR = "validation_results"
+os.makedirs(VALIDATION_RESULTS_DIR, exist_ok=True)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("validation_system.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Add this class to your resilient_execution.py file
+class ResilientModelWithValidation(ResilientModelHandler):
+    """
+    Extension of ResilientModelHandler that includes code validation and improvement.
+    """
+
+    def __init__(self, models, streaming_system, feedback_iterations=3):
+        super().__init__(models)
+        self.streaming_system = streaming_system
+        self.feedback_iterations = feedback_iterations
+        self.feedback_system = FeedbackLoopSystem(self.models[0], streaming_system)
+        self.prompt_engineer = PromptEngineeringSystem(streaming_system)
+
+    def generate_validated_code(self, user_query, task_type="general"):
+        """
+        Generate code with validation and improvement feedback loop.
+
+        Args:
+            user_query: Original user request
+            task_type: Type of stream processing task
+
+        Returns:
+            Dict containing generated code and validation metadata
+        """
+        # Generate detailed specifications for the task
+        specifications = self.prompt_engineer.generate_detailed_spec(user_query, self.models[0])
+
+        # Create enhanced prompt with correctness requirements
+        base_prompt = (
+            f"Generate {self.streaming_system} code for the following user requirements:\n"
+            f"{user_query}\n\n"
+            f"The code should implement a streaming pipeline addressing these specifications:\n"
+            f"- Data Sources: {specifications['data_sources']}\n"
+            f"- Processing Steps: {', '.join(specifications['processing_steps'])}\n"
+            f"- Output Requirements: {specifications['output_requirements']}\n"
+            f"- Performance Constraints: {specifications['performance_constraints']}"
+        )
+
+        enhanced_prompt = self.prompt_engineer.enhance_prompt(base_prompt, task_type)
+
+        # Generate initial code with retry mechanism
+        try:
+            from langchain_core.messages import HumanMessage
+            response = self.invoke_with_retry(enhanced_prompt)
+
+            # Extract code from response
+            import re
+            code_blocks = re.findall(r"```(?:\w+)?\n(.+?)```", response, re.DOTALL)
+            initial_code = code_blocks[0].strip() if code_blocks else response.strip()
+
+            # Validate and improve the code
+            improvement_results = self.feedback_system.validate_and_improve(
+                initial_code,
+                f"{user_query}\n\n{json.dumps(specifications, indent=2)}",
+                max_iterations=self.feedback_iterations
+            )
+
+            # Update prompt templates based on validation results
+            final_validation = improvement_results["history"][-1]["validation_results"]
+            self.prompt_engineer.update_from_validation(
+                final_validation,
+                improvement_results["improved_code"],
+                task_type
+            )
+
+            return {
+                "specifications": specifications,
+                "enhanced_prompt": enhanced_prompt,
+                "initial_code": initial_code,
+                "improved_code": improvement_results["improved_code"],
+                "validation_history": improvement_results["history"],
+                "improvement_metrics": improvement_results["metrics"]
+            }
+
+        except Exception as e:
+            logging.error(f"Error in code generation and validation: {str(e)}")
+            return {
+                "error": str(e),
+                "specifications": specifications,
+                "enhanced_prompt": enhanced_prompt
+            }
+
+    def get_improvement_summary(self, validation_results):
+        """Generate a human-readable summary of code improvements."""
+        if not validation_results or "improvement_metrics" not in validation_results:
+            return "No validation metrics available."
+
+        metrics = validation_results["improvement_metrics"]
+        history = validation_results.get("validation_history", [])
+
+        summary = []
+        summary.append(f"Code improvement summary over {metrics['iteration_count']} iterations:")
+
+        if metrics['iteration_count'] > 1:
+            # Issues reduction
+            initial_issues = metrics['issues_by_iteration'][0]
+            final_issues = metrics['issues_by_iteration'][-1]
+            issues_change = initial_issues - final_issues
+
+            summary.append(f"- Critical issues: {initial_issues} → {final_issues} ({issues_change} fixed)")
+
+            # Warnings reduction
+            initial_warnings = metrics['warnings_by_iteration'][0]
+            final_warnings = metrics['warnings_by_iteration'][-1]
+            warnings_change = initial_warnings - final_warnings
+
+            summary.append(f"- Warnings: {initial_warnings} → {final_warnings} ({warnings_change} addressed)")
+
+            # Overall improvement assessment
+            if metrics['improved']:
+                improvement_rate = metrics.get('improvement_rate', 0) * 100
+                summary.append(f"- Overall improvement rate: {improvement_rate:.1f}%")
+
+                if final_issues == 0 and final_warnings == 0:
+                    summary.append("- Final code passed all validation checks!")
+                elif final_issues == 0:
+                    summary.append("- Final code addressed all critical issues but has minor warnings.")
+                else:
+                    summary.append("- Final code still has some unresolved issues.")
+            else:
+                summary.append("- Code did not show significant improvement across iterations.")
+        else:
+            # Only one iteration
+            issues = metrics['issues_by_iteration'][0]
+            warnings = metrics['warnings_by_iteration'][0]
+
+            summary.append(f"- Initial validation found {issues} critical issues and {warnings} warnings.")
+            summary.append("- No improvement iterations were performed.")
+
+        return "\n".join(summary)
+
 # ---------------------------
 # Core Data Structures
 # ---------------------------
 class ThoughtNode:
     """Represents a node in the reasoning graph (or hypergraph)."""
+
     def __init__(self, node_id: int, content: str,
                  parent_ids: Optional[List[int]] = None,
                  node_type: str = "model", score: float = 0.0):
@@ -46,13 +203,15 @@ class ThoughtNode:
         self.content = content
         self.parent_ids = parent_ids if parent_ids else []
         self.type = node_type  # e.g., 'system', 'user', 'model', 'agent_x', 'error'
-        self.score = score     # New attribute for scoring
+        self.score = score  # New attribute for scoring
 
     def __repr__(self):
         return f"<ThoughtNode {self.id} ({self.type}) - Score: {self.score}>"
 
+
 class GraphOfThoughts:
     """Manages a graph structure and node relationships (pairwise edges)."""
+
     def __init__(self):
         self.nodes: Dict[int, ThoughtNode] = {}
         self.current_id = 0
@@ -105,6 +264,7 @@ class GraphOfThoughts:
             if node.score >= min_score
         }
 
+
 # ---------------------------
 # HYPERGRAPH OF THOUGHTS (HGoT)
 # ---------------------------
@@ -113,6 +273,7 @@ class Hyperedge:
     Represents a hyperedge that connects multiple nodes at once.
     Allows for higher-order relationships (more than two nodes).
     """
+
     def __init__(self, edge_id: int, connected_nodes: List[int], description: str = ""):
         """
         :param edge_id: Unique identifier for this hyperedge
@@ -126,11 +287,13 @@ class Hyperedge:
     def __repr__(self):
         return f"<Hyperedge {self.id} connects nodes {self.connected_nodes}>"
 
+
 class HypergraphOfThoughts(GraphOfThoughts):
     """
     Extends GraphOfThoughts with hyperedges that can connect multiple nodes at once.
     Useful for capturing higher-order relationships in the reasoning process.
     """
+
     def __init__(self):
         super().__init__()
         self.hyperedges: Dict[int, Hyperedge] = {}
@@ -183,6 +346,7 @@ class HypergraphOfThoughts(GraphOfThoughts):
         valid_node_ids = list(self.nodes.keys())
         self.prune_hyperedges(valid_node_ids)
 
+
 # ---------------------------
 # Memory Functions
 # ---------------------------
@@ -196,6 +360,7 @@ def load_memory(file_name: str) -> List[dict]:
             logger.warning(f"Memory file '{file_name}' is corrupted or inaccessible. Starting fresh.")
     return []
 
+
 def save_memory(memory: List[dict]):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     memory_path = os.path.join(MEMORY_DIR, f"memory_{timestamp}.json")
@@ -203,11 +368,13 @@ def save_memory(memory: List[dict]):
         json.dump(memory, file, indent=2)
     logger.info(f"Memory saved to {memory_path}")
 
+
 def list_memory_files() -> List[str]:
     files = [f for f in os.listdir(MEMORY_DIR) if f.endswith(".json")]
     if not files:
         print("No memory files found.")
     return files
+
 
 def summarize_memory(memory: List[dict]) -> str:
     summary_prompt = "Summarize the following conversation:\n" + "\n".join(
@@ -216,6 +383,7 @@ def summarize_memory(memory: List[dict]) -> str:
     summarizer_model = get_llm_model("openai", temperature=0.2, top_p=0.9, max_tokens=1500)
     summary_response = summarizer_model.invoke([HumanMessage(content=summary_prompt)])
     return summary_response.content
+
 
 def choose_memory_file() -> List[dict]:
     files = list_memory_files()
@@ -229,10 +397,11 @@ def choose_memory_file() -> List[dict]:
     try:
         choice = input("\nEnter the number to load (Enter to skip): ").strip()
         if choice and 1 <= int(choice) <= len(files):
-            return load_memory(files[int(choice)-1])
+            return load_memory(files[int(choice) - 1])
     except ValueError:
         pass
     return []
+
 
 # ---------------------------
 # Multi-Agent Functions
@@ -262,9 +431,9 @@ def multi_agent_invoke(models: list, graph: GraphOfThoughts, max_iterations: int
             new_node_id = graph.add_node(
                 response.content,
                 parent_ids=[n.id for n in context_nodes],
-                node_type=f"agent_{i+1}"
+                node_type=f"agent_{i + 1}"
             )
-            log_phase(f"Agent {i+1} added node {new_node_id}: {response.content}")
+            log_phase(f"Agent {i + 1} added node {new_node_id}: {response.content}")
 
         # Get the latest agent-generated node
         agent_nodes = [node for node in graph.nodes.values() if node.type.startswith("agent_")]
@@ -298,6 +467,7 @@ def multi_agent_invoke(models: list, graph: GraphOfThoughts, max_iterations: int
     log_phase(f"Max iterations reached. Final output: {final_response}")
     return final_response
 
+
 def invoke_with_retry(models: list, graph: GraphOfThoughts, retries: int = 3) -> str:
     """Wrapper to try multi-agent invocation multiple times in case of errors."""
     for attempt in range(retries):
@@ -308,6 +478,7 @@ def invoke_with_retry(models: list, graph: GraphOfThoughts, retries: int = 3) ->
             log_phase(f"Attempt {attempt + 1} failed: {str(e)}")
             if attempt == retries - 1:
                 raise
+
 
 def evaluate_response(response: str, query: str, graph: GraphOfThoughts) -> Dict[str, Any]:
     """
@@ -336,20 +507,23 @@ def evaluate_response(response: str, query: str, graph: GraphOfThoughts) -> Dict
     except Exception as e:
         logger.warning(f"Failed to parse evaluation response: {str(e)}")
         return {"score": 0.5, "feedback": "Evaluation failed."}
+
+
 # ---------------------------
 # LLM Model Initialization
 # ---------------------------
 def get_llm_model(model_choice: str, temperature: float,
                   top_p: float, max_tokens: int):
     models = {
-        "mistral": ChatMistralAI(model="mistral-large-latest"),
+        "mistral": ChatMistralAI(model="open-mistral-nemo"),
         "openai": ChatOpenAI(model="gpt-4o"),
         "anthropic": ChatAnthropic(model="claude-3-sonnet"),
         "cohere": ChatCohere(model="command-r-plus"),
-        # "groq": ChatGroq(model="mixtral-8x7b-32768")
+        "groq": ChatGroq(model="Qwen-2.5-Coder-32B")
     }
     model = models.get(model_choice.lower(), models["mistral"])
     return model.bind(temperature=temperature, top_p=top_p, max_tokens=max_tokens)
+
 
 # ---------------------------
 # Streaming System Functions
@@ -361,6 +535,7 @@ def list_streaming_systems() -> List[str]:
         "Redpanda", "Google Dataflow", "Amazon Kinesis"
     ]
 
+
 def prompt_for_streaming_system() -> str:
     systems = list_streaming_systems()
     print("\nAvailable Streaming Systems:")
@@ -371,14 +546,16 @@ def prompt_for_streaming_system() -> str:
         try:
             choice = int(input("\nEnter system number: "))
             if 1 <= choice <= len(systems):
-                return systems[choice-1]
+                return systems[choice - 1]
         except ValueError:
             pass
         print("Invalid choice. Using Apache Flink.")
         return "Apache Flink"
 
+
 import os
 from typing import List
+
 
 def retrieve_relevant_documents(query: str, top_k: int = 3, folder_path: str = "Data/output/flink") -> List[str]:
     """
@@ -410,71 +587,6 @@ def retrieve_relevant_documents(query: str, top_k: int = 3, folder_path: str = "
             logger.warning(f"Failed to read file {file_name}: {str(e)}")
 
     return documents
-
-# ---------------------------
-# Graph Building Functions
-# ---------------------------
-# def build_initial_graph(streaming_system: str, user_message: str,
-#                         use_memory: bool, custom_template: str = None,
-#                         hypergraph: bool = False) -> GraphOfThoughts:
-#     """
-#     Builds either a standard GraphOfThoughts or a HypergraphOfThoughts,
-#     depending on the 'hypergraph' flag.
-#     """
-#     log_phase("=== Building Initial Graph Phase ===")
-#     if hypergraph:
-#         graph = HypergraphOfThoughts()
-#         log_phase("Initialized a HypergraphOfThoughts.")
-#     else:
-#         graph = GraphOfThoughts()
-#         log_phase("Initialized a GraphOfThoughts.")
-#
-#     # system_content = custom_template or (
-#     #     f"Expert stream-processing assistant for {streaming_system}. "
-#     #     f"Generate complete, production-grade pipelines with setup instructions."
-#     # )
-#
-#     system_content = custom_template or (
-#         f"You are a highly experienced architect in stream processing systems. Your task is to design and generate a complete, production-grade pipeline for {streaming_system}. "
-#         "Follow these detailed steps:\n"
-#         "1. **Requirements Gathering:** Identify the data sources, ingestion rates, and performance requirements.\n"
-#         "2. **Data Ingestion:** Specify the mechanisms (e.g., Kafka, Pulsar, file (.txt)) and configurations for capturing real-time data.\n"
-#         "3. **Data Transformation:** Outline the necessary processing steps, (e.g., filtering, aggregation, enrichment, and error handling).\n"
-#         "4. **Pipeline Orchestration:** Design the workflow that ties together ingestion, transformation, and delivery stages, ensuring scalability and fault tolerance.\n"
-#         "5. **Output Configuration:** Define the data sinks (e.g., databases, dashboards, message queues, file (.txt)) along with relevant connection settings.\n"
-#         "Generate a comprehensive solution that includes all necessary configurations, code snippets, and setup instructions to deploy this pipeline in a production environment."
-#     )
-#
-#     system_node = graph.add_node(system_content, node_type="system")
-#     log_phase(f"Added system node {system_node}: {system_content}")
-#
-#     if use_memory:
-#         for memory_entry in conversation_memory:
-#             user_node = graph.add_node(memory_entry["user_message"], node_type="user")
-#             response_node = graph.add_node(
-#                 memory_entry["response_content"],
-#                 parent_ids=[user_node],
-#                 node_type="model"
-#             )
-#             graph.add_relationship(system_node, response_node)
-#             log_phase(f"Added memory nodes: User node {user_node} and response node {response_node}")
-#
-#     user_node = graph.add_node(user_message, node_type="user")
-#     graph.add_relationship(system_node, user_node)
-#     log_phase(f"Added current user node {user_node}: {user_message}")
-#
-#     if hypergraph and isinstance(graph, HypergraphOfThoughts):
-#         edge_id = graph.add_hyperedge(
-#             node_ids=[system_node, user_node],
-#             description="Initial synergy between system instructions and user request"
-#         )
-#         log_phase(f"Created hyperedge {edge_id} connecting nodes {system_node} and {user_node}")
-#
-#     return graph
-
-# ---------------------------
-# Interactive Mode
-# ---------------------------
 
 def build_initial_graph(
         streaming_system: str,
@@ -542,6 +654,7 @@ def build_initial_graph(
         log_phase(f"Created hyperedge {edge_id} connecting nodes {system_node} and {user_node}")
 
     return graph
+
 
 # ---------------------------
 # Main Function with Query Analyzer Integration
@@ -742,7 +855,8 @@ def interactive_mode_with_planner(args):
         # Display file saving information
         print("\n💾 Files saved:")
         print(f"  Session summary: {summary_path}")
-        java_dir = os.path.join("query_analyzer_results", f"session_{plan_executor.results_saver.timestamp}", "generated_code", "java")
+        java_dir = os.path.join("query_analyzer_results", f"session_{plan_executor.results_saver.timestamp}",
+                                "generated_code", "java")
         if os.path.exists(java_dir):
             java_files = [f for f in os.listdir(java_dir) if f.endswith('.java')]
             if java_files:
@@ -771,7 +885,285 @@ def interactive_mode_with_planner(args):
             log_phase("\n👋 Session ended. Goodbye!")
             break
 
+# Modify the interactive_mode_with_planner function to include the new options
+# def interactive_mode_with_planner(args):
+#     global conversation_memory
+#     conversation_memory = choose_memory_file()
+#
+#     # Initialize models
+#     models = [
+#         get_llm_model(model, args.temperature, args.top_p, args.max_tokens)
+#         for model in args.models.split(',')
+#     ]
+#
+#     # Create a dedicated planning model with lower temperature
+#     planning_model = get_llm_model(args.models.split(',')[0], 0.2, 0.9, 2000)
+#
+#     # Try to initialize backup models if available
+#     backup_models = []
+#     if args.backup_models:
+#         backup_model_names = args.backup_models.split(',')
+#         for model_name in backup_model_names:
+#             try:
+#                 model = get_llm_model(model_name, args.temperature, args.top_p, args.max_tokens)
+#                 backup_models.append(model)
+#                 log_phase(f"Initialized backup model: {model_name}")
+#             except Exception as e:
+#                 log_phase(f"Failed to initialize backup model {model_name}: {str(e)}")
+#
+#     # If backup models are available, add them to the models list
+#     if backup_models:
+#         models.extend(backup_models)
+#         log_phase(f"Using {len(models)} total models for resilient execution")
+#
+#     # Initialize the query analyzer
+#     query_analyzer = QueryAnalyzer(planning_model)
+#
+#     # Initialize retry handler
+#     from resilient_execution import ResilientModelHandler
+#     retry_handler = ResilientModelHandler(models)
+#
+#     # Initialize validation systems if enabled
+#     if args.validate_code or args.enhance_prompts:
+#         log_phase("=== Initializing Validation Systems ===")
+#
+#     while True:
+#         os.system('cls' if os.name == 'nt' else 'clear')
+#         log_phase("╔════════════════════════════════════════════╗")
+#         log_phase("║  STREAM PROCESSING ASSISTANT (RESILIENT)   ║")
+#         log_phase("╚════════════════════════════════════════════╝")
+#
+#         system = prompt_for_streaming_system()
+#         user_msg = input("\n📝 Your query: ")
+#         use_memory = input("💾 Use memory? (y/n): ").lower() == "y"
+#         hypergraph_choice = input("🔀 Use Hypergraph of Thoughts? (y/n): ").lower() == "y"
+#         use_rag = input("📚 Use RAG (Retrieval-Augmented Generation)? (y/n): ").lower() == "y"
+#
+#         # Add validation options if enabled
+#         validate_code = args.validate_code
+#         if validate_code:
+#             validate_code = input("🔍 Validate and improve code? (y/n): ").lower() == "y"
+#
+#         enhance_prompts = args.enhance_prompts
+#         if enhance_prompts:
+#             enhance_prompts = input("✨ Use enhanced prompts with correctness requirements? (y/n): ").lower() == "y"
+#
+#         custom_template = None
+#         if args.prompt_file:
+#             with open(args.prompt_file, 'r') as f:
+#                 custom_template = f.read()
+#         else:
+#             custom_input = input("⚙️  Custom template (Enter to skip): ")
+#             if custom_input:
+#                 custom_template = custom_input
+#
+#         # Initialize prompt engineering system if enabled
+#         if enhance_prompts:
+#             prompt_engineer = PromptEngineeringSystem(system)
+#             if custom_template:
+#                 # Enhance the custom template
+#                 custom_template = prompt_engineer.enhance_prompt(custom_template)
+#                 log_phase("Enhanced custom template with correctness requirements")
+#
+#         # 1. Analyze the user query to detect intent with resilient handling
+#         log_phase("=== Query Analysis Phase ===")
+#
+#         # Use the retry handler for intent detection
+#         intent_prompt = (
+#             f"Analyze the following user query and determine the most likely intent. "
+#             f"Respond with a JSON object containing 'intent_type' and 'confidence' (0-1).\n\n"
+#             f"User query: {user_msg}\n\n"
+#             f"Possible intent types: pipeline_design, explanation, comparison, troubleshooting, "
+#             f"optimization, general_question\n\n"
+#             f"JSON response:"
+#         )
+#
+#         intent_response = retry_handler.invoke_with_retry(
+#             intent_prompt,
+#             # Default fallback if all models fail
+#             default_result='{"intent_type": "pipeline_design", "confidence": 0.8}'
+#         )
+#
+#         # Parse the intent response
+#         import json
+#         import re
+#         try:
+#             json_match = re.search(r'```json\s*(.*?)\s*```', intent_response, re.DOTALL)
+#             if json_match:
+#                 intent_json = json.loads(json_match.group(1))
+#             else:
+#                 intent_json = json.loads(intent_response)
+#
+#             from query_analyzer import QueryIntent
+#             intent = QueryIntent(
+#                 intent_type=intent_json.get("intent_type", "pipeline_design"),
+#                 confidence=intent_json.get("confidence", 0.8)
+#             )
+#         except Exception as e:
+#             log_phase(f"Error parsing intent: {str(e)}")
+#             # Fallback to default intent
+#             from query_analyzer import QueryIntent
+#             intent = QueryIntent(intent_type="pipeline_design", confidence=0.8)
+#
+#         log_phase(f"Detected intent: {intent.intent_type} (confidence: {intent.confidence:.2f})")
+#
+#         # Extract parameters if confidence is high enough
+#         if intent.confidence >= 0.6:
+#             try:
+#                 parameters_prompt = (
+#                     f"Extract relevant parameters from this {intent.intent_type} query: '{user_msg}'\n\n"
+#                     "Return a JSON object with parameters appropriate for this type of request. "
+#                     "For example, for a pipeline_design intent, extract parameters like data_source, "
+#                     "throughput_requirements, latency_requirements, etc.\n\n"
+#                     "JSON response:"
+#                 )
+#
+#                 parameters_response = retry_handler.invoke_with_retry(
+#                     parameters_prompt,
+#                     # Default fallback if all models fail
+#                     default_result='{}'
+#                 )
+#
+#                 # Parse parameters
+#                 try:
+#                     json_match = re.search(r'```json\s*(.*?)\s*```', parameters_response, re.DOTALL)
+#                     if json_match:
+#                         parameters = json.loads(json_match.group(1))
+#                     else:
+#                         parameters = json.loads(parameters_response)
+#
+#                     intent.parameters = parameters
+#                     log_phase(f"Extracted parameters: {parameters}")
+#                 except Exception as e:
+#                     log_phase(f"Error parsing parameters: {str(e)}")
+#                     log_phase("Continuing with basic parameters.")
+#                     intent.parameters = {}
+#             except Exception as e:
+#                 log_phase(f"Error extracting parameters: {str(e)}")
+#                 log_phase("Continuing with basic parameters.")
+#                 intent.parameters = {}
+#
+#         # 2. Create an execution plan based on the intent
+#         execution_plan = query_analyzer.create_execution_plan(
+#             query=user_msg,
+#             intent=intent,
+#             streaming_system=system,
+#             use_rag=use_rag
+#         )
+#
+#         # Add code validation steps if enabled
+#         if validate_code:
+#             # Find the code generation step to add validation after it
+#             code_gen_step_id = None
+#             for step in execution_plan.steps:
+#                 if step.step_type in ["code_generation", "pipeline_generation"]:
+#                     code_gen_step_id = step.id
+#                     break
+#
+#             if code_gen_step_id:
+#                 query_analyzer.add_validation_steps(execution_plan, code_gen_step_id, system)
+#                 log_phase("Added code validation steps to execution plan")
+#
+#         log_phase("Created execution plan:")
+#         log_phase(execution_plan.visualize())
+#
+#         # 3. Build the initial graph with system instructions and user query
+#         thought_graph = build_initial_graph(
+#             streaming_system=system,
+#             user_message=user_msg,
+#             use_memory=use_memory,
+#             custom_template=custom_template,
+#             hypergraph=hypergraph_choice,
+#             use_rag=use_rag
+#         )
+#         log_phase("Initial graph built successfully:")
+#         log_phase(thought_graph.visualize())
+#
+#         # 4. Add query analysis results to the graph
+#         analysis_node = thought_graph.add_node(
+#             f"Query analysis: Intent={intent.intent_type}, Confidence={intent.confidence:.2f}",
+#             node_type="analysis"
+#         )
+#         plan_node = thought_graph.add_node(
+#             f"Execution plan created with {len(execution_plan.steps)} steps",
+#             parent_ids=[analysis_node],
+#             node_type="plan"
+#         )
+#         log_phase(f"Added analysis node {analysis_node} and plan node {plan_node}")
+#
+#         # 5. Execute the plan with resilient execution
+#         from resilient_execution import create_resilient_executor
+#         plan_executor = create_resilient_executor(models, thought_graph, system)
+#
+#         # Add validation information to the executor if needed
+#         if validate_code:
+#             plan_executor.validation_enabled = True
+#             plan_executor.validation_iterations = args.validation_iterations
+#
+#         response = plan_executor.execute_plan(execution_plan)
+#
+#         # 6. Save session summary
+#         summary_path = plan_executor.save_session_summary(user_msg, intent.intent_type)
+#         log_phase(f"Saved session summary to: {summary_path}")
+#
+#         # 7. Set final output
+#         thought_graph.set_final_output(response)
+#         log_phase("=== Final Response Phase ===")
+#         log_phase(response)
+#
+#         print("\n🔍 Processing complete!")
+#         print("╔════════════════════════════════════════════╗")
+#         print("║                RESPONSE                   ║")
+#         print("╠════════════════════════════════════════════╣")
+#         print(response)
+#         print("╚════════════════════════════════════════════╝")
+#
+#         # Display validation results if available
+#         validation_nodes = [n for n in thought_graph.nodes.values() if n.type == "validation"]
+#         if validation_nodes and validate_code:
+#             print("\n🔍 Code Validation Results:")
+#             print("-----------------------------")
+#             print(validation_nodes[-1].content)  # Show the last validation result
+#
+#         improved_code_nodes = [n for n in thought_graph.nodes.values() if n.type == "improved_code"]
+#         if improved_code_nodes and validate_code:
+#             print("\n✨ Improved code is available in the output files")
+#
+#         # Display file saving information
+#         print("\n💾 Files saved:")
+#         print(f"  Session summary: {summary_path}")
+#         java_dir = os.path.join("query_analyzer_results", f"session_{plan_executor.results_saver.timestamp}",
+#                                 "generated_code", "java")
+#         if os.path.exists(java_dir):
+#             java_files = [f for f in os.listdir(java_dir) if f.endswith('.java')]
+#             if java_files:
+#                 print("  Java files:")
+#                 for java_file in java_files:
+#                     print(f"    - {os.path.join(java_dir, java_file)}")
+#
+#         if input("\n🔧 Show thought graph? (y/n): ").lower() == "y":
+#             graph_viz = thought_graph.visualize()
+#             print("\n🧠 Thought Process Visualization:")
+#             print(graph_viz)
+#             log_phase("Thought Process Visualization:")
+#             log_phase(graph_viz)
+#
+#         conversation_memory.append({
+#             "streaming_system": system,
+#             "user_message": user_msg,
+#             "response_content": response,
+#             "query_intent": intent.intent_type,
+#             "graph_visualization": thought_graph.visualize(),
+#             "results_path": summary_path
+#         })
+#         save_memory(conversation_memory)
+#
+#         if input("\n🔄 Continue? (y/n): ").lower() != "y":
+#             log_phase("\n👋 Session ended. Goodbye!")
+#             break
+
 # -------------------------------
+
 def main():
     parser = argparse.ArgumentParser(description="GoT/HGoT-enhanced LLM Pipeline Generator")
     parser.add_argument("--models", default="mistral",
@@ -789,6 +1181,12 @@ def main():
                         help="Directory for saving step results and code files")
     parser.add_argument("--max_retries", type=int, default=5,
                         help="Maximum number of retries for API calls")
+    parser.add_argument("--validate_code", action="store_true",
+                        help="Enable code validation and improvement")
+    parser.add_argument("--validation_iterations", type=int, default=3,
+                        help="Maximum number of validation improvement iterations")
+    parser.add_argument("--enhance_prompts", action="store_true",
+                        help="Enable automatic prompt enhancement")
     args = parser.parse_args()
 
     # Clear the phase log file at the start of a new run

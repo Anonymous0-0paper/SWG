@@ -1,0 +1,53 @@
+[Simple]
+Basic Word Count Pipeline:
+The Basic Word Count Pipeline is designed to process and analyze text data from streaming sources. This Flink application connects to a Kafka topic named "input-text" where it continuously consumes text messages. Once ingested, the pipeline splits each message into individual words, implements a counting mechanism to track the frequency of each word's occurrence, and maintains running totals across the entire data stream. The final word counts are persistently written to the local file system in a simple text format with each line containing a word and its corresponding count. This pipeline serves as an excellent starting point for text analysis workflows and demonstrates core stream processing concepts.
+
+CSV Data Transformation:
+The CSV Data Transformation pipeline performs format conversion for seamless data integration between systems. This ETL (Extract, Transform, Load) application reads structured data from CSV files, parsing each record according to a defined schema. The transformation process converts each row into a standardized JSON document, applying data type conversions, field renaming, and structural modifications as required. The resulting JSON documents are published to a specified Kafka topic where they become available for consumption by JSON-compatible systems. This pipeline bridges the gap between traditional batch processing systems that produce CSV files and modern streaming applications that prefer JSON data formats.
+
+Simple Log Aggregator:
+The Simple Log Aggregator pipeline provides operational insights by summarizing application log data over consistent time intervals. It consumes structured log events from a Kafka topic and extracts the log level field (such as INFO, WARN, ERROR) from each event. Using Flink's windowing capabilities, the pipeline groups these events into 5-minute tumbling windows and counts occurrences of each log level within each time window. The resulting aggregates, which include the window timestamp, log level, and event count, are written to a database for persistence and further analysis. This solution enables operations teams to quickly identify unusual patterns in application behavior and track error rate trends.
+
+
+
+
+[Medium]
+Event Filtering Pipeline:
+The Event Filtering Pipeline implements selective event processing to focus computational resources on relevant data. This Flink application consumes a high-volume stream of events from a Kafka topic and applies configurable filtering rules based on the event type field within each message. Events matching the specified criteria are forwarded to a target Kafka topic, while non-matching events are discarded. The pipeline supports multiple filter conditions and can be adjusted at runtime to accommodate changing business requirements. This filtering mechanism is essential for systems dealing with diverse event streams where only specific event types require further processing or analysis.
+
+Temperature Monitoring:
+The Temperature Monitoring pipeline creates an automated alerting system for temperature sensor networks. It processes a continuous stream of JSON-formatted sensor readings from a Kafka topic and applies filtering logic to identify readings where temperatures exceed the critical threshold of 30°C. When elevated temperatures are detected, the pipeline generates structured alert events containing the sensor ID, timestamp, temperature value, and location information. These alerts are then published to a designated Kafka output topic where they can trigger notifications or be consumed by downstream monitoring systems. This pipeline is ideal for environmental monitoring, industrial equipment supervision, and data center management applications.
+
+Industrial Equipment Predictive Maintenance Pipeline:
+I have a streaming pipeline in Apache Flink for industrial equipment predictive maintenance that processes data in several stages. The pipeline begins with a Kafka Source (factory_sensor) that reads factory sensor data. This data then undergoes preprocessing, where invalid or missing values are filtered out and valid sensor readings are normalized. Next, a trend detection operator identifies significant temperature trends over a specified time window, while a vibration analysis function performs pattern analysis on vibration data to detect unusual signatures. The trend detection and vibration analysis results are then combined in a failure risk calculation stage to assign or compute a risk score. Finally, a structured alert (e.g., in JSON format) is generated and saved to a text file when the risk score exceeds a certain threshold.
+Please generate a complete Apache Flink application that implements this pipeline end-to-end. I need the following details:
+Data Schema: Provide the data schema for sensor data (for example, fields for temperature, vibration, timestamp, machine ID, etc.).
+Kafka Configuration: Include code snippets showing how to connect to Kafka for the source, specifying brokers, topics, and serialization details.
+Preprocessing Logic: Demonstrate how to filter out invalid or missing data and normalize valid sensor readings.
+Trend Detection: Implement a function or operator that identifies significant changes or trends in temperature over a defined time window.
+Vibration Analysis: Provide a function or operator that performs pattern analysis on vibration data to detect unusual vibration signatures.
+Failure Risk Calculation: Illustrate a method to combine the results from temperature trend detection and vibration analysis into a single risk score.
+Saving Alerts to a Text File: Show how to output a structured alert to a text file whenever the risk score exceeds the threshold.
+Windowing/Time Semantics: Explain how event-time or processing-time windows are handled for both temperature trend detection and vibration analysis, if applicable.
+Please return a well-structured code example with all necessary imports, class definitions, Flink configurations, and short explanatory text for each step to ensure the logic behind the implementation is clear.
+
+
+
+
+
+[Complex]
+Real-Time Chat Filter Pipeline:
+The Real-Time Chat Filter Pipeline is designed to moderate and enrich chat messages from a Kafka topic named "raw-chat-messages". This Flink application continuously consumes JSON messages containing fields such as messageId, userId, channelId, text, and timestamp. Upon ingestion, the pipeline applies three parallel filtering mechanisms to ensure the integrity of the chat content:
+Profanity Filter: Uses a configurable word list to detect and flag offensive language.
+URL Filter: Employs the regex pattern (?:https?://)?(?:www.)?(\w+.\w+)(?:/\S*)? to identify potentially malicious URLs.
+Spam Filter: Detects repetitive patterns and common spam phrases across messages.
+Each incoming message is enriched with metadata flags that indicate which filters were triggered. Based on the severity of the detected violations, the pipeline intelligently routes the messages:
+Messages with severe violations are forwarded to a dedicated moderation-queue txt file.
+Messages with mild violations have offensive content censored (replacing offensive words with “***”) and are then sent to the filtered-messages txt file.
+Clean messages are directly passed to the unfiltered-messages.txt without modification.
+Furthermore, the pipeline produces comprehensive metrics on filter effectiveness, such as the total number of messages processed and the percentage of messages triggering each filter.
+Please return a well-structured code example with all necessary imports, class definitions, Flink configurations, and short explanatory text for each step to ensure the logic behind the implementation is clear.
+
+
+Real-Time Image Compression Pipeline:
+This pipeline is designed to process and optimize image data streams using Apache Flink. It consumes image files from a Kafka topic, where each image is published as a Base64-encoded string with accompanying metadata. Once ingested, the pipeline splits the processing into parallel operators that handle detailed image metadata extraction (including dimensions, format, and color depth) and perform compression. The compression is achieved using both lossless technique—employing Run-Length Encoding—and lossy technique that utilizes Discrete Cosine Transform (DCT) separately on the image. The system applies 5-second windowing operations to batch process incoming images efficiently, while also calculating key compression metrics (like compression ratio and PSNR quality score) as side outputs. Finally, the pipeline routes the compressed images to separate outputs based on the type of compression applied. It incorporates robust watermarking and event-time processing to manage out-of-order data arrivals.
