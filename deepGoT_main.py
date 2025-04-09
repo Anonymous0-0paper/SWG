@@ -1172,7 +1172,7 @@ def main():
                         help="Comma-separated backup models for resilient execution")
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--top_p", type=float, default=0.9)
-    parser.add_argument("--max_tokens", type=int, default=25000)
+    parser.add_argument("--max_tokens", type=int, default=250000)
     parser.add_argument("--prompt_file", help="Path to custom system prompt template")
     parser.add_argument("--interactive", action="store_true", help="Enable interactive mode")
     parser.add_argument("--use_planner", action="store_true", help="Enable the query analyzer with planning")
