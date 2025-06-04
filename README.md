@@ -1,6 +1,6 @@
-# AutoPipe: LLM Assisted Automatic Stream Processing Pipeline Generation
+# AutoStreamPipe: LLM Assisted Automatic Stream Processing Pipeline Generation
 
-AutoPipe (a.k.a. SWG) is an advanced framework for automatic generation, validation, and improvement of stream processing pipelines using Large Language Models (LLMs). It supports multiple LLM providers (OpenAI, Anthropic, Mistral, Cohere, Groq) and a variety of streaming frameworks (Apache Flink, Spark, Kafka Streams, and more).
+AutoStreamPipe is an advanced framework for automatic generation, validation, and improvement of stream processing pipelines using Large Language Models (LLMs). It supports multiple LLM providers (OpenAI, Anthropic, Mistral, Cohere, Groq) and a variety of streaming frameworks (Apache Flink, Spark, Kafka Streams, and more).
 
 ## Features
 - **Automatic Pipeline Generation:** Generate production-grade code for stream processing systems from natural language queries.
