@@ -111,11 +111,5 @@ Each example includes a description of the pipeline, requirements, and sometimes
 - **Prompt Templates:** Place custom templates in `prompt_templates/` and use `--prompt_file`.
 - **Data & RAG:** Place relevant documents in `Data/output/<framework>/` for retrieval-augmented generation.
 
-## Security Note
-- Do **not** commit API keys. Use environment variables or a `.env` file (see `Config/env_config.py`).
-
-## License
-[Specify your license here]
-
 ## Acknowledgments
 - Built on [LangChain](https://www.langchain.com/), [OpenAI](https://openai.com/), [Anthropic](https://www.anthropic.com/), [Mistral](https://mistral.ai/), [Cohere](https://cohere.com/), [Groq](https://groq.com/).
